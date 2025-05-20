@@ -1,0 +1,7 @@
+# Google API Key Configuration
+GOOGLE_API_KEY=<GOOGLE_API_KEY>
+
+# PayPal Configuration
+PAYPAL_CLIENT_ID=<APP_CLIENT_ID>
+PAYPAL_SECRET=<APP_SECRET>
+

@@ -5,7 +5,7 @@ from typing import List, Literal, Optional
 
 class ItemDetails(BaseModel):
     item_cost: float = Field(..., description="The cost of each item – up to 2 decimal points.")
-    tax_percent: float = Field(0, description="The tax percent for the specific item.")
+    tax_percent: float = Field(0.0, description="The tax percent for the specific item.")
     item_total: float = Field(..., description="The total cost of this line item.")
 
 
@@ -72,11 +72,11 @@ class CreateOrderParameters(BaseModel):
         description="List of individual items in the order (max 50)."
     )
     discount: float = Field(
-        0,
+        0.0,
         description="The discount amount for the order."
     )
     shipping_cost: float = Field(
-        0,
+        0.0,
         description="The cost of shipping for the order."
     )
     shipping_address: Optional[ShippingAddress] = Field(

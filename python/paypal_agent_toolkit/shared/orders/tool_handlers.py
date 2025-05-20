@@ -5,7 +5,11 @@ import json
 
 def create_order(client, params: dict):
 
-    validated = CreateOrderParameters(**params)
+    try:
+        validated = CreateOrderParameters(**params)
+    except ValidationError as e:
+        raise ValueError(f"Bad order payload: {e}")  
+
     order_payload = parse_order_details(validated.model_dump())
     
     order_uri = "/v2/checkout/orders"

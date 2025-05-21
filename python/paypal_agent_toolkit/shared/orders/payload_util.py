@@ -61,8 +61,14 @@ def parse_order_details(params: dict) -> dict:
             "items": items,
         }
 
-        if params.get("shipping_address"):
+
+        if params.get("shipping_address") and params["shipping_address"].get("country_code"):
+            shipping_preference = "SET_PROVIDED_ADDRESS"
             base_purchase_unit["shipping"] = {"address": params["shipping_address"]}
+        else:
+            shipping_preference = "NO_SHIPPING"
+    
+
 
         request = {
             "intent": "CAPTURE",
@@ -74,13 +80,18 @@ def parse_order_details(params: dict) -> dict:
             experience_context["return_url"] = str(params["return_url"])
         if params.get("cancel_url"):
             experience_context["cancel_url"] = str(params["cancel_url"])
+        if shipping_preference:
+            experience_context["shipping_preference"] = shipping_preference
+            experience_context["user_action"] = "PAY_NOW"
 
         if experience_context:
             request["payment_source"] = {
                 "paypal": {
-                    "experience_context": experience_context
+                    "experience_context": experience_context,
                 }
             }
+        
+        
 
         return request
 

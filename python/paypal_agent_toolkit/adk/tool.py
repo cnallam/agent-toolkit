@@ -1,128 +1,132 @@
 """
-Google ADK FunctionTool for a PayPal REST API's.
+Google-ADK FunctionTool for the PayPal REST API's
 """
 
 from __future__ import annotations
 
 import inspect
 from typing import (
-    Any,
-    Dict,
-    List,
-    Optional,
-    Union,
-    Annotated,
-    Literal,
-    get_args,
-    get_origin,
+    Any, Dict, List, Optional, Union, Annotated, Literal,
+    get_origin, get_args,
 )
 
-from pydantic import BaseModel
-from pydantic.networks import AnyUrl, HttpUrl 
+from pydantic import BaseModel, ConfigDict, create_model
+from pydantic.networks import AnyUrl, HttpUrl
 from google.adk.tools import FunctionTool, ToolContext
-
-# adjust this import to your project structure
 from ..shared.api import PayPalAPI
 
 
-# --------------------------------------------------------------------------- #
-# Helpers                                                                     #
-# --------------------------------------------------------------------------- #
+# ────────────────────────────────────────────────────────────────────────────
+# 1)  Annotation simplifier
+# ────────────────────────────────────────────────────────────────────────────
+def _simplify_basemodel(model_cls: type[BaseModel]) -> type[BaseModel]:
+    """Return a *new* model class whose field annotations are ADK-friendly."""
+    fields: dict[str, tuple[Any, Any]] = {}
+    for name, field in model_cls.model_fields.items():          # type: ignore[attr-defined]
+        ann = _simplify_annotation(field.annotation)            
+        default = inspect._empty if field.is_required() else field.default
+        fields[name] = (ann, default)
+
+    return create_model(                                        # type: ignore[call-arg]
+        f"Simplified{model_cls.__name__}",
+        __config__=ConfigDict(extra="forbid"),
+        **fields,
+    )
+
+
 def _simplify_annotation(tp):  # noqa: ANN001
     """
-    Convert rich typing / Pydantic constructs into ADK-friendly types.
+    Collapse rich typing / Pydantic constructs to primitives ADK accepts.
 
-    * Literal["USD"]      -> str
-    * Annotated[str, …]   -> str
-    * constr/min|max      -> str
-    * BaseModel subclass  -> dict
-    * List[X]             -> list[{simplified X}]
-    * Optional[X]         -> Optional[{simplified X}]
+    Literal       → str
+    Annotated     → underlying type
+    constr / URLs → str
+    BaseModel     → *simplified clone* (recursively processed)
+    Containers    → same container with inner types simplified
     """
+    # 0) URLs and constrained primitives → plain primitives
+    if isinstance(tp, type):
+        if issubclass(tp, (AnyUrl, HttpUrl)):
+            return str
+        # v2 no longer has ConstrainedStr; use a generic catch‑all
+        if issubclass(tp, str) and tp is not str:
+            return str
+        if issubclass(tp, int) and tp is not int:
+            return int
+        if issubclass(tp, float) and tp is not float:
+            return float
 
-    if isinstance(tp, type) and issubclass(tp, (AnyUrl, HttpUrl)):
-        return str
+
     origin = get_origin(tp)
+    args = get_args(tp)
 
-    # Optional[...]  (Union[X, None])
-    if origin is Union and type(None) in get_args(tp):
-        non_null = next(a for a in get_args(tp) if a is not type(None))
-        return Optional[_simplify_annotation(non_null)]  # type: ignore[arg-type]
+    # 1) Optional[X] (Union[X, None])
+    if origin is Union and len(args) == 2 and type(None) in args:
+        non_null = next(a for a in args if a is not type(None))
+        return Optional[_simplify_annotation(non_null)]         # type: ignore[arg-type]
 
-    # Annotated[base, ...]  -> base
+    # 2) Annotated[base, …]  → base
     if origin is Annotated:
-        base = get_args(tp)[0]
-        return _simplify_annotation(base)
+        return _simplify_annotation(args[0])
 
-    # Literal[...]  -> str
+    # 3) Literal[...] → str
     if origin is Literal:
         return str
 
-    # Containers ------------------------------------------------------------
+    # 4) Containers ---------------------------------------------------------
     if origin in (list, List):
-        inner = _simplify_annotation(get_args(tp)[0])
-        return List[inner]  # type: ignore[arg-type]
-
+        return List[_simplify_annotation(args[0])]              # type: ignore[arg-type]
     if origin in (dict, Dict):
-        key_t, val_t = get_args(tp) or (str, Any)
-        return Dict[_simplify_annotation(key_t), _simplify_annotation(val_t)]  # type: ignore[arg-type]
+        key_t, val_t = args or (str, Any)
+        return Dict[
+            _simplify_annotation(key_t), _simplify_annotation(val_t)  # type: ignore[arg-type]
+        ]
 
-    # Pydantic BaseModel -> dict
+    # 5) Nested Pydantic models --------------------------------------------
     if isinstance(tp, type) and issubclass(tp, BaseModel):
-        return dict
+        return _simplify_basemodel(tp)
 
+    # 6) Already simple (str, int, float, bool, Any…)
     return tp
 
 
-# --------------------------------------------------------------------------- #
-# Factory                                                                     #
-# --------------------------------------------------------------------------- #
+# ────────────────────────────────────────────────────────────────────────────
+# 2)  Public factory
+# ────────────────────────────────────────────────────────────────────────────
 def PayPalTool(api: PayPalAPI, spec: Dict[str, Any]) -> FunctionTool:  # noqa: N802
     """
-    Build an ADK FunctionTool for one PayPal REST operation.
+    Create an ADK FunctionTool for **one** PayPal REST operation.
 
-    Parameters
-    ----------
-    api
-        Active `PayPalAPI` wrapper.
-    spec
-        Dict with keys: ``method`` (str), ``description`` (str),
-        ``args_schema`` (Pydantic model class).
-
-    Returns
-    -------
-    google.adk.tools.FunctionTool
+    `spec` must contain:
+    • method        - PayPal REST method name (“create_order”)
+    • description   - Human-readable description
+    • args_schema   - Pydantic-v2 model *class* describing the request body
     """
     method_name: str = spec["method"]
-    schema_model = spec["args_schema"]          # Pydantic v2 model **class**
+    schema_model = spec["args_schema"]
     description: str = spec["description"]
 
-    # ------------------------------------------------------------------ #
-    # Runtime implementation                                             #
-    # ------------------------------------------------------------------ #
+    # ── runtime implementation ────────────────────────────────────────────
     async def _tool_impl(tool_context: ToolContext, **kwargs):  # noqa: ANN001
-        """Delegate to PayPalAPI.run (auto-generated)."""
+        # kwargs already validated / converted by ADK
         return api.run(method_name, kwargs)
 
     _tool_impl.__name__ = method_name
     _tool_impl.__doc__ = description
 
-    # ------------------------------------------------------------------ #
-    # Build an ADK‑friendly *Signature*                                  #
-    # ------------------------------------------------------------------ #
+    # ── build signature with simplified types ─────────────────────────────
     parameters: List[inspect.Parameter] = []
-
-    for field_name, field in schema_model.model_fields.items():  # type: ignore[attr-defined]
+    for name, field in schema_model.model_fields.items():       # type: ignore[attr-defined]
         parameters.append(
             inspect.Parameter(
-                name=field_name,
+                name=name,
                 kind=inspect.Parameter.KEYWORD_ONLY,
                 annotation=_simplify_annotation(field.annotation),
-                default=inspect._empty,      # ADK dislikes default values
+                default=inspect._empty,          # ADK dislikes defaults
             )
         )
 
-    # Hidden ADK execution context (not exposed to the LLM)
+    # Hidden ADK context (not shown to LLM)
     parameters.append(
         inspect.Parameter(
             name="tool_context",
@@ -134,7 +138,7 @@ def PayPalTool(api: PayPalAPI, spec: Dict[str, Any]) -> FunctionTool:  # noqa: N
 
     _tool_impl.__signature__ = inspect.Signature(parameters)
 
-    # ------------------------------------------------------------------ #
-    # Wrap & return                                                      #
-    # ------------------------------------------------------------------ #
-    return FunctionTool(func=_tool_impl)
+    # ── wrap & return ─────────────────────────────────────────────────────
+    return FunctionTool(
+        func=_tool_impl
+    )

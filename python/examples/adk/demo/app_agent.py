@@ -23,8 +23,8 @@ configuration = Configuration(
     actions={
         "orders": {
             "create": True,
-            "capture": True,
-            "get": True
+            # "capture": True,
+            # "get": True
         },
     },
     context=Context(
@@ -39,15 +39,6 @@ tk = PayPalToolkit(
 )
 
 
-# LlmAgent(
-#         model="gemini-2.0-flash-001", 
-#         name='orders_handler',
-#         description="Helps customers with their product orders and shipments via the PayPal API",
-#         instruction=prompt.ORDERS_INSTR,
-#         tools=tk.get_tools(),
-#         generate_content_config=types.GenerateContentConfig(temperature=0.3),        
-#     ) 
-
 agent = Agent(
     name="paypal_checkout_helper",
     model="gemini-2.0-flash-001", 
@@ -57,39 +48,3 @@ agent = Agent(
     ),
     tools=tk.get_tools(),
 )
-
-# ------------------------------------------------------------------ #
-# 3)  Runner + session
-# ------------------------------------------------------------------ #
-runner  = Runner(app_name="checkout-demo",
-                 agent=agent,
-                 session_service=InMemorySessionService())
-
-runner.session_service.create_session(
-    app_name="checkout-demo",
-    user_id="alice",
-    session_id="test-session"
-)
-
-# ------------------------------------------------------------------ #
-# 4)  Send user message (note the correct Content syntax)
-# ------------------------------------------------------------------ #
-user_msg = types.Content(
-    role="user",
-    parts=[types.Part(text="I want to buy a hoodie for $49.99.")]
-)
-
-for ev in runner.run(user_id="alice",
-                     session_id="test-session",
-                     new_message=user_msg):
-    # skip streaming chunks
-    if ev.partial:
-        continue
-
-    # print every final chunk or tool call/result
-    if ev.get_function_calls():
-        print("LLM called tool:", ev.get_function_calls())
-    elif ev.get_function_responses():
-        print("Tool returned:", ev.get_function_responses())
-    else:
-        print(f"[{ev.author}] {ev.content.parts[0].text}")
